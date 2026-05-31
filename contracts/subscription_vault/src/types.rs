@@ -592,6 +592,34 @@ pub struct BillingRetentionConfig {
     pub keep_recent: u32,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccruedTotals {
+    pub interval: i128,
+    pub usage: i128,
+    pub one_off: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenEarnings {
+    pub accruals: AccruedTotals,
+    pub withdrawals: i128,
+    pub refunds: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenReconciliationSnapshot {
+    pub token: Address,
+    pub computed_balance: i128,
+    pub total_accruals: i128,
+    pub total_withdrawals: i128,
+    pub total_refunds: i128,
+    pub stored_balance: i128,
+    pub matches: bool,
+}
+
 /// Aggregated compacted history for pruned rows.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1174,6 +1202,18 @@ pub struct UsageStatementEvent {
     pub token: Address,
     pub timestamp: u64,
     pub reference: String,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageChargeResult {
+    Charged = 0,
+    InsufficientBalance = 1,
+    LifetimeCapReached = 2,
+    Replay = 3,
+    BurstLimitExceeded = 4,
+    RateLimitExceeded = 5,
+    UsageCapExceeded = 6,
 }
 
 #[contracttype]
