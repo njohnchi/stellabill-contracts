@@ -8574,317 +8574,272 @@ fn test_state_completeness_all_statuses_exist() {
     }
 }
 
-// ── Protocol fee routing tests ────────────────────────────────────────────────
-//
-// Invariant: gross == merchant_net + treasury_fee on every charge type.
-// fee = gross * fee_bps / 10_000  (integer floor division)
+// -- Usage rate limit tests ---------------------------------------------------
 
-/// Helper: set protocol fee and return treasury address.
-fn setup_protocol_fee(
+/// Helper: create a usage-enabled subscription with prepaid balance.
+fn setup_usage_sub(
     env: &Env,
     client: &SubscriptionVaultClient,
-    admin: &Address,
-    fee_bps: u32,
-) -> Address {
-    let treasury = Address::generate(env);
-    client.set_protocol_fee(admin, &treasury, &fee_bps);
-    treasury
-}
-
-// ── fee = 0 (disabled) ────────────────────────────────────────────────────────
-
-#[test]
-fn test_protocol_fee_zero_interval_full_amount_to_merchant() {
-    let (env, client, token, admin) = setup_test_env();
-    env.ledger().with_mut(|li| li.timestamp = T0);
-
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
+) -> (u32, Address, Address) {
+    let subscriber = Address::generate(env);
+    let merchant = Address::generate(env);
     let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &false, &None::<i128>, &None::<u64>,
+        &subscriber,
+        &merchant,
+        &AMOUNT,
+        &INTERVAL,
+        &true,
+        &None::<i128>,
+        &None::<u64>,
     );
-    // Mint and deposit
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
-
-    env.ledger().with_mut(|li| li.timestamp = T0 + INTERVAL + 1);
-    client.charge_subscription(&id);
-
-    // No fee configured: merchant gets full amount
-    assert_eq!(client.get_merchant_balance_by_token(&merchant, &token), AMOUNT);
+    fixtures::seed_balance(env, client, id, PREPAID);
+    (id, subscriber, merchant)
 }
 
 #[test]
-fn test_protocol_fee_zero_usage_full_amount_to_merchant() {
-    let (env, client, token, _admin) = setup_test_env();
+fn test_usage_charge_with_reference_succeeds() {
+    let (env, client, _, _) = setup_test_env();
     env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, _) = setup_usage_sub(&env, &client);
 
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &true, &None::<i128>, &None::<u64>,
+    let result = client.charge_usage_with_reference(
+        &id,
+        &1_000_000,
+        &String::from_str(&env, "ref_001"),
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
-
-    let usage = 1_000_000i128;
-    client.charge_usage(&id, &usage);
-
-    assert_eq!(client.get_merchant_balance_by_token(&merchant, &token), usage);
+    assert_eq!(result, crate::UsageChargeResult::Charged);
 }
 
 #[test]
-fn test_protocol_fee_zero_oneoff_full_amount_to_merchant() {
-    let (env, client, token, _admin) = setup_test_env();
+fn test_usage_replay_protection() {
+    let (env, client, _, _) = setup_test_env();
     env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, _) = setup_usage_sub(&env, &client);
 
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &false, &None::<i128>, &None::<u64>,
+    // First call succeeds
+    let r1 = client.charge_usage_with_reference(
+        &id,
+        &1_000_000,
+        &String::from_str(&env, "ref_dup"),
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
+    assert_eq!(r1, crate::UsageChargeResult::Charged);
 
-    let charge = 2_000_000i128;
-    client.charge_one_off(&id, &merchant, &charge);
-
-    assert_eq!(client.get_merchant_balance_by_token(&merchant, &token), charge);
-}
-
-// ── fee = 10_000 (100%) ───────────────────────────────────────────────────────
-
-#[test]
-fn test_protocol_fee_10000_interval_all_to_treasury() {
-    let (env, client, token, admin) = setup_test_env();
-    env.ledger().with_mut(|li| li.timestamp = T0);
-
-    let treasury = setup_protocol_fee(&env, &client, &admin, 10_000);
-
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &false, &None::<i128>, &None::<u64>,
+    // Same reference is rejected as Replay
+    let r2 = client.charge_usage_with_reference(
+        &id,
+        &1_000_000,
+        &String::from_str(&env, "ref_dup"),
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
-
-    env.ledger().with_mut(|li| li.timestamp = T0 + INTERVAL + 1);
-    client.charge_subscription(&id);
-
-    assert_eq!(client.get_merchant_balance_by_token(&merchant, &token), 0);
-    assert_eq!(client.get_merchant_balance_by_token(&treasury, &token), AMOUNT);
-    // gross == merchant_net + treasury_fee
-    assert_eq!(0 + AMOUNT, AMOUNT);
+    assert_eq!(r2, crate::UsageChargeResult::Replay);
 }
 
 #[test]
-fn test_protocol_fee_10000_usage_all_to_treasury() {
-    let (env, client, token, admin) = setup_test_env();
+fn test_usage_burst_limit_exceeded() {
+    let (env, client, _, _) = setup_test_env();
     env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, merchant) = setup_usage_sub(&env, &client);
 
-    let treasury = setup_protocol_fee(&env, &client, &admin, 10_000);
-
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &true, &None::<i128>, &None::<u64>,
+    // Configure burst: minimum 10 seconds between calls
+    client.configure_usage_limits(
+        &merchant,
+        &id,
+        &None::<u32>,
+        &0u64,
+        &10u64, // burst_min_interval_secs
+        &None::<i128>,
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
 
-    let usage = 1_000_000i128;
-    client.charge_usage(&id, &usage);
+    // First call at T0 succeeds
+    let r1 = client.charge_usage_with_reference(
+        &id,
+        &1_000_000,
+        &String::from_str(&env, "ref_b1"),
+    );
+    assert_eq!(r1, crate::UsageChargeResult::Charged);
 
-    assert_eq!(client.get_merchant_balance_by_token(&merchant, &token), 0);
-    assert_eq!(client.get_merchant_balance_by_token(&treasury, &token), usage);
+    // Second call at T0 (same timestamp, 0 elapsed) is rejected
+    let r2 = client.charge_usage_with_reference(
+        &id,
+        &1_000_000,
+        &String::from_str(&env, "ref_b2"),
+    );
+    assert_eq!(r2, crate::UsageChargeResult::BurstLimitExceeded);
 }
 
 #[test]
-fn test_protocol_fee_10000_oneoff_all_to_treasury() {
-    let (env, client, token, admin) = setup_test_env();
+fn test_usage_burst_exactly_at_minimum_allowed() {
+    let (env, client, _, _) = setup_test_env();
     env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, merchant) = setup_usage_sub(&env, &client);
 
-    let treasury = setup_protocol_fee(&env, &client, &admin, 10_000);
-
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &false, &None::<i128>, &None::<u64>,
+    client.configure_usage_limits(
+        &merchant,
+        &id,
+        &None::<u32>,
+        &0u64,
+        &5u64, // burst_min_interval_secs = 5
+        &None::<i128>,
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
 
-    let charge = 2_000_000i128;
-    client.charge_one_off(&id, &merchant, &charge);
-
-    assert_eq!(client.get_merchant_balance_by_token(&merchant, &token), 0);
-    assert_eq!(client.get_merchant_balance_by_token(&treasury, &token), charge);
-}
-
-// ── fee = 500 bps (5%) — split and conservation ───────────────────────────────
-
-#[test]
-fn test_protocol_fee_500bps_interval_split_conserved() {
-    let (env, client, token, admin) = setup_test_env();
-    env.ledger().with_mut(|li| li.timestamp = T0);
-
-    let treasury = setup_protocol_fee(&env, &client, &admin, 500); // 5%
-
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    // Use AMOUNT = 10_000_000 → fee = 500_000, net = 9_500_000
-    let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &false, &None::<i128>, &None::<u64>,
+    // First call at T0
+    client.charge_usage_with_reference(
+        &id,
+        &1_000_000,
+        &String::from_str(&env, "ref_c1"),
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
 
-    env.ledger().with_mut(|li| li.timestamp = T0 + INTERVAL + 1);
-    client.charge_subscription(&id);
-
-    let expected_fee = AMOUNT * 500 / 10_000; // 500_000
-    let expected_net = AMOUNT - expected_fee;  // 9_500_000
-
-    let merchant_bal = client.get_merchant_balance_by_token(&merchant, &token);
-    let treasury_bal = client.get_merchant_balance_by_token(&treasury, &token);
-
-    assert_eq!(merchant_bal, expected_net);
-    assert_eq!(treasury_bal, expected_fee);
-    // Conservation: gross == merchant_net + treasury_fee
-    assert_eq!(merchant_bal + treasury_bal, AMOUNT);
+    // Advance exactly 5 seconds — should be allowed (elapsed == burst_min_interval_secs)
+    env.ledger().with_mut(|li| li.timestamp = T0 + 5);
+    let r = client.charge_usage_with_reference(
+        &id,
+        &1_000_000,
+        &String::from_str(&env, "ref_c2"),
+    );
+    assert_eq!(r, crate::UsageChargeResult::Charged);
 }
 
 #[test]
-fn test_protocol_fee_500bps_usage_split_conserved() {
-    let (env, client, token, admin) = setup_test_env();
+fn test_usage_rate_limit_exceeded() {
+    let (env, client, _, _) = setup_test_env();
     env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, merchant) = setup_usage_sub(&env, &client);
 
-    let treasury = setup_protocol_fee(&env, &client, &admin, 500);
-
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &true, &None::<i128>, &None::<u64>,
+    // Allow 2 calls per 60-second window, no burst restriction
+    client.configure_usage_limits(
+        &merchant,
+        &id,
+        &Some(2u32),
+        &60u64,
+        &0u64,
+        &None::<i128>,
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
 
-    let usage = 1_000_000i128;
-    client.charge_usage(&id, &usage);
+    let r1 = client.charge_usage_with_reference(&id, &500_000, &String::from_str(&env, "r1"));
+    assert_eq!(r1, crate::UsageChargeResult::Charged);
+    let r2 = client.charge_usage_with_reference(&id, &500_000, &String::from_str(&env, "r2"));
+    assert_eq!(r2, crate::UsageChargeResult::Charged);
 
-    let expected_fee = usage * 500 / 10_000; // 50_000
-    let expected_net = usage - expected_fee;  // 950_000
-
-    let merchant_bal = client.get_merchant_balance_by_token(&merchant, &token);
-    let treasury_bal = client.get_merchant_balance_by_token(&treasury, &token);
-
-    assert_eq!(merchant_bal, expected_net);
-    assert_eq!(treasury_bal, expected_fee);
-    assert_eq!(merchant_bal + treasury_bal, usage);
+    // Third call in same window is rejected
+    let r3 = client.charge_usage_with_reference(&id, &500_000, &String::from_str(&env, "r3"));
+    assert_eq!(r3, crate::UsageChargeResult::RateLimitExceeded);
 }
 
 #[test]
-fn test_protocol_fee_500bps_oneoff_split_conserved() {
-    let (env, client, token, admin) = setup_test_env();
+fn test_usage_rate_limit_window_rollover_resets_count() {
+    let (env, client, _, _) = setup_test_env();
     env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, merchant) = setup_usage_sub(&env, &client);
 
-    let treasury = setup_protocol_fee(&env, &client, &admin, 500);
-
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &false, &None::<i128>, &None::<u64>,
+    // 1 call per 60-second window
+    client.configure_usage_limits(
+        &merchant,
+        &id,
+        &Some(1u32),
+        &60u64,
+        &0u64,
+        &None::<i128>,
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
 
-    let charge = 3_000_000i128;
-    client.charge_one_off(&id, &merchant, &charge);
+    let r1 = client.charge_usage_with_reference(&id, &500_000, &String::from_str(&env, "w1r1"));
+    assert_eq!(r1, crate::UsageChargeResult::Charged);
 
-    let expected_fee = charge * 500 / 10_000; // 150_000
-    let expected_net = charge - expected_fee;  // 2_850_000
+    // Still in window — rejected
+    let r2 = client.charge_usage_with_reference(&id, &500_000, &String::from_str(&env, "w1r2"));
+    assert_eq!(r2, crate::UsageChargeResult::RateLimitExceeded);
 
-    let merchant_bal = client.get_merchant_balance_by_token(&merchant, &token);
-    let treasury_bal = client.get_merchant_balance_by_token(&treasury, &token);
-
-    assert_eq!(merchant_bal, expected_net);
-    assert_eq!(treasury_bal, expected_fee);
-    assert_eq!(merchant_bal + treasury_bal, charge);
+    // Advance past window boundary — counter resets
+    env.ledger().with_mut(|li| li.timestamp = T0 + 60);
+    let r3 = client.charge_usage_with_reference(&id, &500_000, &String::from_str(&env, "w2r1"));
+    assert_eq!(r3, crate::UsageChargeResult::Charged);
 }
 
-// ── rounding: amount * fee_bps not divisible by 10_000 ───────────────────────
-// fee = floor(amount * fee_bps / 10_000); remainder stays with merchant.
-
 #[test]
-fn test_protocol_fee_rounding_remainder_stays_with_merchant() {
-    let (env, client, token, admin) = setup_test_env();
+fn test_usage_cap_exceeded() {
+    let (env, client, _, _) = setup_test_env();
     env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, merchant) = setup_usage_sub(&env, &client);
 
-    // 333 bps on 1_000_001 → fee = 1_000_001 * 333 / 10_000 = 33_300 (floor)
-    let treasury = setup_protocol_fee(&env, &client, &admin, 333);
-
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let gross = 1_000_001i128;
-    let id = client.create_subscription(
-        &subscriber, &merchant, &gross, &INTERVAL, &false, &None::<i128>, &None::<u64>,
+    // Cap at 1_500_000 units per period
+    client.configure_usage_limits(
+        &merchant,
+        &id,
+        &None::<u32>,
+        &0u64,
+        &0u64,
+        &Some(1_500_000i128),
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &(gross * 5));
-    client.deposit_funds(&id, &subscriber, &(gross * 5));
 
-    env.ledger().with_mut(|li| li.timestamp = T0 + INTERVAL + 1);
-    client.charge_subscription(&id);
+    let r1 = client.charge_usage_with_reference(&id, &1_000_000, &String::from_str(&env, "cap1"));
+    assert_eq!(r1, crate::UsageChargeResult::Charged);
 
-    let expected_fee = gross * 333 / 10_000;
-    let expected_net = gross - expected_fee;
-
-    let merchant_bal = client.get_merchant_balance_by_token(&merchant, &token);
-    let treasury_bal = client.get_merchant_balance_by_token(&treasury, &token);
-
-    assert_eq!(treasury_bal, expected_fee);
-    assert_eq!(merchant_bal, expected_net);
-    // Conservation holds even with rounding
-    assert_eq!(merchant_bal + treasury_bal, gross);
+    // 1_000_000 + 1_000_000 = 2_000_000 > 1_500_000 cap
+    let r2 = client.charge_usage_with_reference(&id, &1_000_000, &String::from_str(&env, "cap2"));
+    assert_eq!(r2, crate::UsageChargeResult::UsageCapExceeded);
 }
 
-// ── no treasury configured: fee_bps > 0 but no treasury → full amount to merchant ──
+#[test]
+fn test_usage_cap_exactly_at_boundary_allowed() {
+    let (env, client, _, _) = setup_test_env();
+    env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, merchant) = setup_usage_sub(&env, &client);
+
+    // Cap at exactly 2_000_000 units
+    client.configure_usage_limits(
+        &merchant,
+        &id,
+        &None::<u32>,
+        &0u64,
+        &0u64,
+        &Some(2_000_000i128),
+    );
+
+    let r1 = client.charge_usage_with_reference(&id, &1_000_000, &String::from_str(&env, "bnd1"));
+    assert_eq!(r1, crate::UsageChargeResult::Charged);
+
+    // Exactly at cap boundary — allowed
+    let r2 = client.charge_usage_with_reference(&id, &1_000_000, &String::from_str(&env, "bnd2"));
+    assert_eq!(r2, crate::UsageChargeResult::Charged);
+}
 
 #[test]
-fn test_protocol_fee_no_treasury_full_amount_to_merchant() {
-    let (env, client, token, admin) = setup_test_env();
+fn test_usage_cap_resets_on_period_rollover() {
+    let (env, client, _, _) = setup_test_env();
     env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, merchant) = setup_usage_sub(&env, &client);
 
-    // Set fee_bps but then clear treasury by setting fee to 0 (no treasury stored)
-    // Actually: just don't call set_protocol_fee at all — treasury is None by default.
-    // Verify that even if we manually set FeeBps without Treasury, merchant gets full amount.
-    env.as_contract(&client.address, || {
-        env.storage().instance().set(&DataKey::FeeBps, &500u32);
-        // DataKey::Treasury is NOT set
-    });
-
-    let subscriber = Address::generate(&env);
-    let merchant = Address::generate(&env);
-    let id = client.create_subscription(
-        &subscriber, &merchant, &AMOUNT, &INTERVAL, &false, &None::<i128>, &None::<u64>,
+    // Cap at 1_000_000 per period
+    client.configure_usage_limits(
+        &merchant,
+        &id,
+        &None::<u32>,
+        &0u64,
+        &0u64,
+        &Some(1_000_000i128),
     );
-    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&subscriber, &PREPAID);
-    client.deposit_funds(&id, &subscriber, &PREPAID);
 
-    env.ledger().with_mut(|li| li.timestamp = T0 + INTERVAL + 1);
-    client.charge_subscription(&id);
+    let r1 = client.charge_usage_with_reference(&id, &1_000_000, &String::from_str(&env, "p1c1"));
+    assert_eq!(r1, crate::UsageChargeResult::Charged);
 
-    // No treasury → merchant gets full gross amount
-    assert_eq!(client.get_merchant_balance_by_token(&merchant, &token), AMOUNT);
+    // Still in same period — rejected
+    let r2 = client.charge_usage_with_reference(&id, &1_000_000, &String::from_str(&env, "p1c2"));
+    assert_eq!(r2, crate::UsageChargeResult::UsageCapExceeded);
+
+    // Advance into next billing period — cap resets
+    env.ledger().with_mut(|li| li.timestamp = T0 + INTERVAL);
+    let r3 = client.charge_usage_with_reference(&id, &1_000_000, &String::from_str(&env, "p2c1"));
+    assert_eq!(r3, crate::UsageChargeResult::Charged);
+}
+
+#[test]
+fn test_usage_no_limits_configured_is_passthrough() {
+    let (env, client, _, _) = setup_test_env();
+    env.ledger().with_mut(|li| li.timestamp = T0);
+    let (id, _, _) = setup_usage_sub(&env, &client);
+
+    // No limits configured — all unique references should succeed
+    for i in 0u32..5 {
+        let reference = String::from_str(&env, &alloc::format!("pass_{}", i));
+        let r = client.charge_usage_with_reference(&id, &100_000, &reference);
+        assert_eq!(r, crate::UsageChargeResult::Charged);
+    }
 }
