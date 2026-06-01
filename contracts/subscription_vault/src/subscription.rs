@@ -140,7 +140,7 @@ pub fn get_plan_template(env: &Env, plan_template_id: u32) -> Result<PlanTemplat
 pub(crate) fn extend_subscription_ttl(env: &Env, key: &DataKey) {
     env.storage()
         .persistent()
-        .extend_ttl(key, SUB_TTL_THRESHOLD, SUB_TTL_EXTEND_TO);
+        .extend_ttl(key, SUB_TTL_THRESHOLD as u32, SUB_TTL_EXTEND_TO as u32);
 }
 
 pub(crate) fn write_subscription(env: &Env, subscription_id: u32, sub: &Subscription) {
@@ -586,10 +586,29 @@ pub fn do_cancel_subscription(
         return Err(Error::Forbidden);
     }
 
+    // Reject double-cancellation of an already Cancelled subscription.
+    if sub.status == SubscriptionStatus::Cancelled {
+        return Err(Error::InvalidStatusTransition);
+    }
+
     transition_to(&mut sub.status, SubscriptionStatus::Cancelled)?;
     let refund_amount = sub.prepaid_balance;
 
+    // EFFECTS: zero balance before external token transfer (CEI pattern).
+    sub.prepaid_balance = 0;
+    let token_addr = sub.token.clone();
     write_subscription(env, subscription_id, &sub);
+
+    // INTERACTIONS: transfer remaining prepaid balance to subscriber.
+    if refund_amount > 0 {
+        let token_client = soroban_sdk::token::Client::new(env, &token_addr);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &sub.subscriber,
+            &refund_amount,
+        );
+        crate::accounting::sub_total_accounted(env, &token_addr, refund_amount)?;
+    }
 
     // Remove from index
     let merchant_key = DataKey::MerchantSubs(sub.merchant.clone());
