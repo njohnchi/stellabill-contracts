@@ -717,6 +717,55 @@ fn test_full_lifecycle_active_pause_resume() {
 }
 
 #[test]
+fn test_pause_resume_then_charge_succeeds() {
+    let test_env = TestEnv::default();
+    test_env.set_timestamp(T0);
+
+    let (id, subscriber, _) = fixtures::create_subscription(
+        &test_env.env,
+        &test_env.client,
+        SubscriptionStatus::Active,
+    );
+    fixtures::seed_balance(&test_env.env, &test_env.client, id, PREPAID);
+
+    test_env.client.pause_subscription(&id, &subscriber);
+    assert_eq!(
+        test_env.client.get_subscription(&id).status,
+        SubscriptionStatus::Paused
+    );
+
+    test_env.client.resume_subscription(&id, &subscriber);
+    assert_eq!(
+        test_env.client.get_subscription(&id).status,
+        SubscriptionStatus::Active
+    );
+
+    test_env.jump(INTERVAL + 1);
+    let result = test_env.client.try_charge_subscription(&id);
+    assert_eq!(result, Ok(Ok(ChargeExecutionResult::Charged)));
+    assert_eq!(
+        test_env.client.get_subscription(&id).prepaid_balance,
+        PREPAID - AMOUNT
+    );
+}
+
+#[test]
+fn test_resume_subscription_from_active_is_idempotent() {
+    let test_env = TestEnv::default();
+    let (id, subscriber, _) = fixtures::create_subscription(
+        &test_env.env,
+        &test_env.client,
+        SubscriptionStatus::Active,
+    );
+    // Resume on already-Active subscription should succeed (idempotent)
+    test_env.client.resume_subscription(&id, &subscriber);
+    assert_eq!(
+        test_env.client.get_subscription(&id).status,
+        SubscriptionStatus::Active
+    );
+}
+
+#[test]
 fn test_all_valid_transitions_coverage() {
     let test_env = TestEnv::default();
 

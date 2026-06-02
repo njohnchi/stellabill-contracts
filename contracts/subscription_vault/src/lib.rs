@@ -2796,6 +2796,9 @@ impl SubscriptionVault {
 mod test_charge_invariants;
 
 #[cfg(test)]
+mod test_insufficient_balance;
+
+#[cfg(test)]
 mod test {
     use super::*;
     use crate::SubscriptionVaultClient;

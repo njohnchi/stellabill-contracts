@@ -727,10 +727,9 @@ pub fn do_resume_subscription(
         return Err(Error::InsufficientBalance);
     }
 
+    let previous_status = sub.status;
     transition_to(&mut sub.status, SubscriptionStatus::Active)?;
 
-    let previous_status = sub.status;
-    sub.status = SubscriptionStatus::Active;
     write_subscription(env, subscription_id, &sub);
 
      env.events().publish(
