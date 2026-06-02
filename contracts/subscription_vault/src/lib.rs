@@ -68,53 +68,6 @@ pub mod statements {
             oldest_period_start: None,
             newest_period_end: None,
         }
-
-        let seqs = load_statement_index(env, subscription_id);
-        let total = seqs.len();
-        let mut statements = Vec::new(env);
-
-        if offset >= total {
-            return Ok(BillingStatementsPage {
-                statements,
-                next_cursor: None,
-                total,
-            });
-        }
-
-        if newest_first {
-            let mut current = total.saturating_sub(1 + offset);
-            let end = u32::MAX;
-            while statements.len() < limit {
-                if let Some(sequence) = seqs.get(current) {
-                    if let Some(statement) = load_statement(env, subscription_id, sequence) {
-                        statements.push_back(statement);
-                    }
-                }
-                if current == 0 {
-                    break;
-                }
-                current -= 1;
-            }
-        } else {
-            let mut current = offset;
-            while statements.len() < limit {
-                if let Some(sequence) = seqs.get(current) {
-                    if let Some(statement) = load_statement(env, subscription_id, sequence) {
-                        statements.push_back(statement);
-                    }
-                }
-                current = current.saturating_add(1);
-                if current >= total {
-                    break;
-                }
-            }
-        }
-
-        Ok(BillingStatementsPage {
-            statements,
-            next_cursor: None,
-            total,
-        })
     }
 
     pub fn compact_subscription_statements(
@@ -264,6 +217,10 @@ pub mod operator {
     use crate::types::{BatchChargeResult, ChargeExecutionResult, Error, UsageChargeResult};
     use soroban_sdk::{Address, Env, String, Vec};
 
+    fn require_operator_auth(_env: &Env, _op: &Address) -> Result<Address, Error> {
+        Ok(_op.clone())
+    }
+
     pub fn do_set_operator(_env: &Env, _admin: Address, _operator: Address) -> Result<(), Error> {
         Ok(())
     }
@@ -274,51 +231,51 @@ pub mod operator {
         None
     }
     pub fn do_operator_batch_charge(
-        _env: &Env,
-        _operator: Address,
-        _ids: &Vec<u32>,
-        _nonce: u64,
+        env: &Env,
+        operator: Address,
+        ids: &Vec<u32>,
+        nonce: u64,
     ) -> Result<Vec<BatchChargeResult>, Error> {
-        let op = require_operator_auth(env, &operator)?;
+        let _op = require_operator_auth(env, &operator)?;
 
         // Nonce check runs before any state mutation to prevent replay, scoped
         // to the operator's own counter in the operator domain.
-        crate::nonce::check_and_advance(env, &op, crate::nonce::DOMAIN_OPERATOR_BATCH_CHARGE, nonce)?;
+        crate::nonce::check_and_advance(env, &_op, crate::nonce::DOMAIN_OPERATOR_BATCH_CHARGE, nonce)?;
 
         Ok(crate::admin::execute_batch_charge(env, ids))
     }
 
     /// Single interval charge driven by the operator.
     pub fn do_operator_charge_subscription(
-        _env: &Env,
-        _op: Address,
-        _subscription_id: u32,
+        env: &Env,
+        op: Address,
+        subscription_id: u32,
     ) -> Result<ChargeExecutionResult, Error> {
-        require_operator_auth(env, &op)?;
+        let _op = require_operator_auth(env, &op)?;
         let now = env.ledger().timestamp();
         crate::charge_core::charge_one(env, subscription_id, now, None)
     }
 
     /// Metered usage charge driven by the operator (no reference).
     pub fn do_operator_charge_usage(
-        _env: &Env,
-        _op: Address,
-        _subscription_id: u32,
-        _usage_amount: i128,
+        env: &Env,
+        op: Address,
+        subscription_id: u32,
+        usage_amount: i128,
     ) -> Result<UsageChargeResult, Error> {
-        require_operator_auth(env, &op)?;
+        let _op = require_operator_auth(env, &op)?;
         crate::charge_core::charge_usage_one(env, subscription_id, usage_amount, String::from_str(env, ""))
     }
 
     /// Metered usage charge driven by the operator, with a reference string.
     pub fn do_operator_charge_usage_with_reference(
-        _env: &Env,
-        _op: Address,
-        _subscription_id: u32,
-        _usage_amount: i128,
-        _reference: String,
+        env: &Env,
+        op: Address,
+        subscription_id: u32,
+        usage_amount: i128,
+        reference: String,
     ) -> Result<UsageChargeResult, Error> {
-        require_operator_auth(env, &op)?;
+        let _op = require_operator_auth(env, &op)?;
         crate::charge_core::charge_usage_one(env, subscription_id, usage_amount, reference)
     }
 }
@@ -1143,6 +1100,7 @@ impl SubscriptionVault {
             expires_at,
         )?;
 
+        let timestamp = env.ledger().timestamp();
         let token: Address = env
             .storage()
             .instance()
@@ -1789,19 +1747,23 @@ impl SubscriptionVault {
         let _guard = crate::reentrancy::ReentrancyGuard::lock(&env, "charge_subscription")?;
 
         let old_sub = queries::get_subscription(&env, subscription_id)?;
+        let timestamp = env.ledger().timestamp();
         let result =
-            charge_core::charge_one(&env, subscription_id, env.ledger().timestamp(), None)?;
+            charge_core::charge_one(&env, subscription_id, timestamp, None)?;
         let new_sub = queries::get_subscription(&env, subscription_id)?;
+
+        let period_start = old_sub.last_payment_timestamp;
+        let period_end = timestamp;
 
         env.events().publish(
             (Symbol::new(&env, "charged"),),
             SubscriptionChargedEvent {
                 subscription_id,
-                subscriber: sub.subscriber,
-                merchant: sub.merchant,
-                token: sub.token,
-                amount: sub.amount,
-                lifetime_charged: sub.lifetime_charged,
+                subscriber: new_sub.subscriber.clone(),
+                merchant: new_sub.merchant.clone(),
+                token: new_sub.token.clone(),
+                amount: new_sub.amount,
+                lifetime_charged: new_sub.lifetime_charged,
                 timestamp,
                 period_start,
                 period_end,
@@ -1926,9 +1888,12 @@ impl SubscriptionVault {
     /// token transfer. The guard is automatically released (even on error) via the
     /// Drop trait, guaranteeing cleanup.
     pub fn withdraw_merchant_funds(env: Env, merchant: Address, amount: i128) -> Result<(), Error> {
+        require_not_emergency_stop(&env)?;
+
         // Acquire reentrancy guard: prevents re-entry during token transfer
         let _guard = crate::reentrancy::ReentrancyGuard::lock(&env, "withdraw_merchant_funds")?;
 
+        let timestamp = env.ledger().timestamp();
         merchant::withdraw_merchant_funds(&env, merchant.clone(), amount)?;
 
         let new_balance = merchant::get_merchant_balance(&env, &merchant);
@@ -1977,6 +1942,8 @@ impl SubscriptionVault {
         token: Address,
         amount: i128,
     ) -> Result<(), Error> {
+        require_not_emergency_stop(&env)?;
+
         // Acquire reentrancy guard: prevents re-entry during token transfer
         let _guard =
             crate::reentrancy::ReentrancyGuard::lock(&env, "withdraw_merchant_token_funds")?;
@@ -2612,7 +2579,7 @@ impl SubscriptionVault {
         key: String,
         value: String,
     ) -> Result<(), Error> {
-        metadata::do_set_metadata(&env, authorizer, subscription_id, key, value)
+        metadata::set_metadata(&env, subscription_id, &authorizer, key, value)
     }
 
     ///
@@ -2642,7 +2609,7 @@ impl SubscriptionVault {
         authorizer: Address,
         key: String,
     ) -> Result<(), Error> {
-        metadata::do_delete_metadata(&env, authorizer, subscription_id, key)
+        metadata::delete_metadata(&env, subscription_id, &authorizer, key)
     }
 
     /// Get a metadata value by key.

@@ -20,11 +20,11 @@ pub fn set_metadata(
         return Err(Error::Forbidden);
     }
 
-    if key.len() > MAX_METADATA_KEY_LENGTH as usize {
+    if key.len() as u32 > MAX_METADATA_KEY_LENGTH {
         return Err(Error::MetadataKeyTooLong);
     }
 
-    if value.len() > MAX_METADATA_VALUE_LENGTH as usize {
+    if value.len() as u32 > MAX_METADATA_VALUE_LENGTH {
         return Err(Error::MetadataValueTooLong);
     }
 
@@ -37,7 +37,7 @@ pub fn set_metadata(
     let key_exists = keys.iter().any(|k| k == key);
 
     if !key_exists {
-        if keys.len() >= MAX_METADATA_KEYS as usize {
+        if keys.len() as u32 >= MAX_METADATA_KEYS {
             return Err(Error::MetadataKeyLimitReached);
         }
         keys.push_back(key.clone());
