@@ -1237,16 +1237,19 @@ pub struct UsageStatementEvent {
 pub enum UsageChargeResult {
     /// Usage charge was accepted and funds were debited.
     Charged = 0,
+    /// Subscriber has insufficient prepaid balance to cover the usage amount.
+    InsufficientBalance = 1,
+    /// Subscription lifetime cap has been reached; no further charges allowed.
+    LifetimeCapReached = 2,
     /// Duplicate reference — same off-chain event already processed.
-    Replay = 1,
+    Replay = 3,
     /// Charge attempted too soon after the previous charge (burst protection).
-    BurstLimitExceeded = 2,
+    BurstLimitExceeded = 4,
     /// Rate-limit window call count exhausted.
-    RateLimitExceeded = 3,
+    RateLimitExceeded = 5,
     /// Charge would exceed the per-period usage cap.
-    UsageCapExceeded = 4,
+    UsageCapExceeded = 6,
 }
-
 
 #[contracttype]
 #[derive(Clone, Debug)]
