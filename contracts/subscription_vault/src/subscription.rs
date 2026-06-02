@@ -361,9 +361,8 @@ pub fn do_create_subscription_with_token(
 ) -> Result<u32, Error> {
     subscriber.require_auth();
 
-    if crate::blocklist::is_blocklisted(env, &subscriber) {
-        return Err(Error::SubscriberBlocklisted);
-    }
+    crate::blocklist::require_not_blocklisted(env, &subscriber)?;
+    crate::blocklist::require_not_blocklisted(env, &merchant)?;
 
     if amount < 0 {
         return Err(Error::InvalidAmount);
@@ -481,6 +480,8 @@ pub fn do_deposit_funds(
         return Err(Error::Unauthorized);
     }
 
+    crate::blocklist::require_not_blocklisted(env, &sub.merchant)?;
+
     // Block deposits to subscriptions whose merchant is paused — paused
     // merchants must not accumulate new subscriber funds.
     if crate::merchant::get_merchant_paused(env, sub.merchant.clone()) {
@@ -540,6 +541,7 @@ pub fn do_deposit_funds(
         && sub.prepaid_balance >= sub.amount
     {
         sub.status = SubscriptionStatus::Active;
+        sub.grace_start_timestamp = None;
         write_subscription(env, subscription_id, &sub);
 
         env.events().publish(
@@ -779,6 +781,9 @@ pub fn do_charge_one_off(
     merchant.require_auth();
 
     let mut sub = get_subscription(env, subscription_id)?;
+
+    crate::blocklist::require_not_blocklisted(env, &sub.subscriber)?;
+    crate::blocklist::require_not_blocklisted(env, &sub.merchant)?;
 
     let now = env.ledger().timestamp();
     // Expiration guard

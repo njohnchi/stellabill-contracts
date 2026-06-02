@@ -39,7 +39,7 @@ fn test_multi_actor_e2e_flow() {
     token_admin_client.mint(&subscriber, &initial_mint);
 
     // Deploy and Init Vault
-    let vault_id = env.register_contract(None, SubscriptionVault);
+    let vault_id = env.register(SubscriptionVault, ());
     let vault = SubscriptionVaultClient::new(&env, &vault_id);
 
     let min_topup = 1_000_000; // 0.1 tokens
