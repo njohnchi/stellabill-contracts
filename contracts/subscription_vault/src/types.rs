@@ -398,6 +398,14 @@ pub enum Error {
     // --- Subscription Update (9000-9099) ---
     /// Attempting to change usage_enabled on an existing subscription is not allowed.
     CannotChangeUsageMode = 9001,
+
+    // --- Schema Migration (9100-9199) ---
+    /// Stored schema version is newer than the binary's STORAGE_VERSION; downgrade rejected.
+    SchemaMigrationDowngrade = 9101,
+    /// Alias for [`SchemaMigrationDowngrade`]: stored version is higher than the binary version.
+    ///
+    /// Returned by the `migrate_schema` entrypoint when a downgrade is attempted.
+    SchemaVersionTooHigh = 9102,
 }
 
 impl Error {
@@ -482,6 +490,23 @@ pub struct MigrationExportEvent {
     pub start_id: u32,
     pub limit: u32,
     pub exported: u32,
+    pub timestamp: u64,
+}
+
+/// Event emitted when the contract schema is upgraded on-chain.
+///
+/// Emitted by [`SubscriptionVault::migrate`] after `DataKey::SchemaVersion`
+/// has been updated. Off-chain indexers use this to detect and audit upgrades.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SchemaMigratedEvent {
+    /// Admin address that authorised the migration.
+    pub admin: Address,
+    /// Schema version stored on-chain before this migration.
+    pub from_version: u32,
+    /// Schema version written to storage by this migration (equals `STORAGE_VERSION`).
+    pub to_version: u32,
+    /// Ledger timestamp when the migration was executed.
     pub timestamp: u64,
 }
 
@@ -1205,21 +1230,6 @@ pub struct UsageStatementEvent {
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UsageChargeResult {
-    /// Usage charge was accepted and funds were debited.
-    Charged = 0,
-    /// Duplicate reference — same off-chain event already processed.
-    Replay = 1,
-    /// Charge attempted too soon after the previous charge (burst protection).
-    BurstLimitExceeded = 2,
-    /// Rate-limit window call count exhausted.
-    RateLimitExceeded = 3,
-    /// Charge would exceed the per-period usage cap.
-    UsageCapExceeded = 4,
-}
-
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UsageChargeResult {
     Charged = 0,
     InsufficientBalance = 1,
     LifetimeCapReached = 2,
@@ -1567,3 +1577,4 @@ pub struct PrepaidQueryResult {
     /// Whether more subscriptions may exist beyond this scan window.
     pub has_more: bool,
 }
+
