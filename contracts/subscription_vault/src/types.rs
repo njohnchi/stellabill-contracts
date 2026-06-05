@@ -1268,16 +1268,6 @@ pub enum ChargeExecutionResult {
 }
 
 #[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UsageChargeResult {
-    Charged = 0,
-    Replay = 1,
-    BurstLimitExceeded = 2,
-    RateLimitExceeded = 3,
-    UsageCapExceeded = 4,
-}
-
-#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UsageLimits {
     pub rate_limit_max_calls: Option<u32>,

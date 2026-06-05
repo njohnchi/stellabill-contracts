@@ -666,7 +666,7 @@ fn test_list_subscriber_sparse_ids_within_budget() {
         env.storage().instance().set(&crate::types::DataKey::NextId, &5000);
     });
 
-    with_perf_budget,
+    with_perf_budget(
         &env,
         perf_budgets::LIST_SUBSCRIBER_CPU,
         perf_budgets::LIST_SUBSCRIBER_LEDGER_READS,

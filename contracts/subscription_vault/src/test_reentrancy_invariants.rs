@@ -13,7 +13,8 @@
 //! - Cross-function reentrancy simulation (not possible in Soroban test env).
 //! - Live token callback injection (Soroban mock auths prevent this).
 
-    Error, SubscriptionStatus, SubscriptionVault, SubscriptionVaultClient, types::DataKey,
+use crate::types::{
+    DataKey, Error, SubscriptionStatus, SubscriptionVault, SubscriptionVaultClient,
 };
 use soroban_sdk::{testutils::Address as _, Address, Env};
 

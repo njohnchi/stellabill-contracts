@@ -6,6 +6,27 @@ use crate::types::{
     MAX_METADATA_KEY_LENGTH, MAX_METADATA_VALUE_LENGTH,
 };
 
+/// Wrapper called by the contract entrypoint.
+pub fn do_set_metadata(
+    env: &Env,
+    authorizer: Address,
+    subscription_id: u32,
+    key: String,
+    value: String,
+) -> Result<(), Error> {
+    set_metadata(env, subscription_id, &authorizer, key, value)
+}
+
+/// Wrapper called by the contract entrypoint.
+pub fn do_delete_metadata(
+    env: &Env,
+    authorizer: Address,
+    subscription_id: u32,
+    key: String,
+) -> Result<(), Error> {
+    delete_metadata(env, subscription_id, &authorizer, key)
+}
+
 pub fn set_metadata(
     env: &Env,
     subscription_id: u32,
@@ -20,11 +41,11 @@ pub fn set_metadata(
         return Err(Error::Forbidden);
     }
 
-    if key.len() > MAX_METADATA_KEY_LENGTH as usize {
+    if key.len() > MAX_METADATA_KEY_LENGTH {
         return Err(Error::MetadataKeyTooLong);
     }
 
-    if value.len() > MAX_METADATA_VALUE_LENGTH as usize {
+    if value.len() > MAX_METADATA_VALUE_LENGTH {
         return Err(Error::MetadataValueTooLong);
     }
 
@@ -37,7 +58,7 @@ pub fn set_metadata(
     let key_exists = keys.iter().any(|k| k == key);
 
     if !key_exists {
-        if keys.len() >= MAX_METADATA_KEYS as usize {
+        if keys.len() >= MAX_METADATA_KEYS {
             return Err(Error::MetadataKeyLimitReached);
         }
         keys.push_back(key.clone());
