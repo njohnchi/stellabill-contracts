@@ -21,6 +21,7 @@ mod queries;
 mod safe_math;
 mod subscription;
 mod types;
+pub mod period_snapshots;
 
 pub use safe_math::*;
 
@@ -2917,9 +2918,7 @@ mod test_utils;
 mod test_charge_invariants;
 
 #[cfg(test)]
-mod test_governance;
-
-#[cfg(test)]
+mod test_billing_period_snapshots;
 mod test_insufficient_balance;
 
 #[cfg(test)]
